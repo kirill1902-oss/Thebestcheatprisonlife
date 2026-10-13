@@ -1,0 +1,1395 @@
+--// ============================================================
+--// PRISON LIFE HUB | Sakura Mobile v7.7 SAFE 📱🌸
+--// Sprint: родной Prison Life НЕ трогаем
+--// Silent: УДАЛЁН
+--// ЛИМИТ ДИСТАНЦИИ АИМА: 300 метров
+--// АНТИ-КИК: рандомные задержки + проверки видимости/угла/дистанции
+--// AIM ВРАГИ + ТРИГГЕР: только с оружием в руках
+--// + СВОЙ ХОТБАР В ПРАВОМ ВЕРХУ (КРУГ) + DRAG + ЭКИПИРОВКА
+--// + 📌 ФИКСАЦИЯ ХОТБАРА (кнопка в меню + иконка) + 💾 сохранение позиции
+--// + ФИКС: слоты из Backpack + Character + StarterGear
+--// ============================================================
+
+local Players              = game:GetService("Players")
+local RunService           = game:GetService("RunService")
+local UserInputService     = game:GetService("UserInputService")
+local VirtualUser          = game:GetService("VirtualUser")
+local CoreGui              = game:GetService("CoreGui")
+local StarterGui           = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera      = workspace.CurrentCamera
+
+--// STATE
+local State = {
+    Hitbox=false, ESP=false, Trigger=false, Aim=false, AimAssist=false,
+    InfJump=false, WallCheck=true, FOV=60,
+}
+
+local CharacterCache, ESPCache = {}, {}
+local TargetCache = { player=nil, part=nil }
+local AIM_SPEED = 0.9
+
+--// АНТИ-КИК / ЛИМИТЫ
+local TriggerCooldownMin = 0.15
+local TriggerCooldownMax = 0.25
+local lastTrigger = 0
+local nextTriggerDelay = 0.18
+
+local MAX_AIM_DISTANCE = 300
+local MAX_AIM_ANGLE    = 45
+
+local AIM_UPDATE_INTERVAL  = 0.03
+local HITBOX_SCAN_INTERVAL = 0.5
+local lastAimUpdate, lastHitboxScan = 0, 0
+
+--// HITBOX
+local HITBOX_SCALE = 5
+local HitboxParts = { Head=true, Torso=true, UpperTorso=true, LowerTorso=true, HumanoidRootPart=true }
+local HitboxCache, ActiveHitboxes = {}, {}
+local function registerHitbox(p)   ActiveHitboxes[p] = true end
+local function unregisterHitbox(p) ActiveHitboxes[p] = nil  end
+
+--// THEME
+local Theme = {
+    Bg=Color3.fromRGB(24,12,24), BgAlt=Color3.fromRGB(38,18,38),
+    Accent=Color3.fromRGB(255,130,180), Text=Color3.fromRGB(255,240,248),
+    TextDim=Color3.fromRGB(210,170,200), Green=Color3.fromRGB(180,240,190),
+    GreenDark=Color3.fromRGB(90,160,110), Stroke=Color3.fromRGB(120,70,110),
+    Red=Color3.fromRGB(255,90,110),
+}
+
+local function hasToolEquipped()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    return char:FindFirstChildOfClass("Tool") ~= nil
+end
+
+--// GUI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PL_Sakura_Mobile"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.Parent = CoreGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.BackgroundColor3 = Theme.Bg
+MainFrame.BackgroundTransparency = 0.05
+MainFrame.Position = UDim2.new(0.02, 0, 0.08, 0)
+MainFrame.Size = UDim2.new(0, 685, 0, 328)
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
+local MainStroke = Instance.new("UIStroke", MainFrame)
+MainStroke.Color = Theme.Accent; MainStroke.Thickness = 1.5; MainStroke.Transparency = 0.3
+
+local Header = Instance.new("Frame")
+Header.BackgroundColor3 = Theme.BgAlt
+Header.BorderSizePixel = 0
+Header.Size = UDim2.new(1, 0, 0, 32)
+Header.Parent = MainFrame
+Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 12)
+local HGrad = Instance.new("UIGradient")
+HGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(90,30,70)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(60,25,60)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(90,30,70)),
+})
+HGrad.Parent = Header
+
+local LogoDot = Instance.new("Frame")
+LogoDot.BackgroundColor3 = Theme.Accent; LogoDot.BorderSizePixel = 0
+LogoDot.Position = UDim2.new(0, 12, 0.5, -6); LogoDot.Size = UDim2.new(0, 12, 0, 12)
+LogoDot.Parent = Header
+Instance.new("UICorner", LogoDot).CornerRadius = UDim.new(1, 0)
+
+local Title = Instance.new("TextLabel")
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 34, 0, 2)
+Title.Size = UDim2.new(1, -210, 0, 16)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "🌸 PRISON LIFE HUB 📱"
+Title.TextColor3 = Theme.Text; Title.TextSize = 13
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Position = UDim2.new(0, 34, 0, 16)
+StatusLabel.Size = UDim2.new(1, -210, 0, 12)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Text = "Mobile v7.7 • SAFE • Hotbar DRAG+LOCK 📌"
+StatusLabel.TextColor3 = Theme.TextDim; StatusLabel.TextSize = 10
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = Header
+
+local CollapseButton = Instance.new("TextButton")
+CollapseButton.BackgroundColor3 = Color3.fromRGB(55, 25, 55)
+CollapseButton.Position = UDim2.new(1, -30, 0, 5)
+CollapseButton.Size = UDim2.new(0, 22, 0, 22)
+CollapseButton.Font = Enum.Font.GothamBold
+CollapseButton.Text = "−"; CollapseButton.TextColor3 = Theme.Text; CollapseButton.TextSize = 16
+CollapseButton.Parent = Header
+Instance.new("UICorner", CollapseButton).CornerRadius = UDim.new(0, 6)
+
+local TeamBadge = Instance.new("TextLabel")
+TeamBadge.BackgroundColor3 = Theme.BgAlt; TeamBadge.BorderSizePixel = 0
+TeamBadge.Position = UDim2.new(1, -166, 0, 5); TeamBadge.Size = UDim2.new(0, 130, 0, 22)
+TeamBadge.Font = Enum.Font.GothamBold
+TeamBadge.Text = "TEAM: ..."; TeamBadge.TextColor3 = Theme.TextDim; TeamBadge.TextSize = 10
+TeamBadge.Parent = Header
+Instance.new("UICorner", TeamBadge).CornerRadius = UDim.new(0, 6)
+local TBS = Instance.new("UIStroke", TeamBadge); TBS.Color = Theme.Stroke; TBS.Thickness = 1
+
+-- Drag окна (мышь + палец)
+do
+    local dragging, dragStart, startPos = false, nil, nil
+    Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos  = MainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    Header.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local d = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                       startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end)
+end
+
+local ButtonsScroll = Instance.new("ScrollingFrame")
+ButtonsScroll.BackgroundTransparency = 1; ButtonsScroll.BorderSizePixel = 0
+ButtonsScroll.Position = UDim2.new(0, 6, 0, 38)
+ButtonsScroll.Size = UDim2.new(1, -12, 0, 88)
+ButtonsScroll.CanvasSize = UDim2.new(0, 7 * 82, 0, 88)
+ButtonsScroll.ScrollBarThickness = 3
+ButtonsScroll.ScrollBarImageColor3 = Theme.Accent
+ButtonsScroll.ScrollingDirection = Enum.ScrollingDirection.X
+ButtonsScroll.Parent = MainFrame
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.FillDirection = Enum.FillDirection.Horizontal
+UIListLayout.Padding = UDim.new(0, 4)
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+UIListLayout.Parent = ButtonsScroll
+
+local FOVContainer = Instance.new("Frame")
+FOVContainer.BackgroundColor3 = Theme.BgAlt
+FOVContainer.Position = UDim2.new(0, 6, 0, 132)
+FOVContainer.Size = UDim2.new(1, -12, 0, 28)
+FOVContainer.Parent = MainFrame
+Instance.new("UICorner", FOVContainer).CornerRadius = UDim.new(0, 8)
+local FOVSt = Instance.new("UIStroke", FOVContainer)
+FOVSt.Color = Theme.Stroke; FOVSt.Thickness = 1
+
+local function styleButton(text, order)
+    local btn = Instance.new("TextButton")
+    btn.BackgroundColor3 = Theme.BgAlt
+    btn.Size = UDim2.new(0, 78, 0, 82)
+    btn.Font = Enum.Font.GothamMedium
+    btn.Text = ""; btn.AutoButtonColor = false
+    btn.LayoutOrder = order; btn.Parent = ButtonsScroll
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Color = Theme.Stroke; stroke.Thickness = 1
+
+    local indicator = Instance.new("Frame")
+    indicator.BackgroundColor3 = Theme.Accent; indicator.BorderSizePixel = 0
+    indicator.Position = UDim2.new(0.5, -14, 0, 6)
+    indicator.Size = UDim2.new(0, 28, 0, 3)
+    indicator.Parent = btn
+    Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 4, 0, 16)
+    label.Size = UDim2.new(1, -8, 0, 40)
+    label.Font = Enum.Font.GothamMedium
+    label.Text = text; label.TextColor3 = Theme.Text
+    label.TextSize = 10; label.TextWrapped = true
+    label.Parent = btn
+
+    local stateBadge = Instance.new("TextLabel")
+    stateBadge.BackgroundColor3 = Color3.fromRGB(55, 30, 55)
+    stateBadge.BorderSizePixel = 0
+    stateBadge.Position = UDim2.new(0.5, -20, 1, -22)
+    stateBadge.Size = UDim2.new(0, 40, 0, 18)
+    stateBadge.Font = Enum.Font.GothamBold
+    stateBadge.Text = "OFF"; stateBadge.TextColor3 = Theme.TextDim; stateBadge.TextSize = 10
+    stateBadge.Parent = btn
+    Instance.new("UICorner", stateBadge).CornerRadius = UDim.new(0, 4)
+
+    return btn, indicator, label, stateBadge, stroke
+end
+
+local function buildFOVSlider()
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Position = UDim2.new(0, 10, 0, 6); lbl.Size = UDim2.new(0, 100, 0, 14)
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.Text = "FOV: " .. State.FOV; lbl.TextColor3 = Theme.TextDim
+    lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = FOVContainer
+
+    local track = Instance.new("Frame")
+    track.BackgroundColor3 = Color3.fromRGB(55, 30, 55); track.BorderSizePixel = 0
+    track.Position = UDim2.new(0, 110, 0, 10); track.Size = UDim2.new(1, -126, 0, 8)
+    track.Parent = FOVContainer
+    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+    local fill = Instance.new("Frame")
+    fill.BackgroundColor3 = Theme.Accent; fill.BorderSizePixel = 0
+    fill.Size = UDim2.new(State.FOV / 500, 0, 1, 0); fill.Parent = track
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.BackgroundColor3 = Theme.Text
+    knob.Size = UDim2.new(0, 14, 0, 14)
+    knob.Position = UDim2.new(fill.Size.X.Scale, -7, 0.5, -7)
+    knob.Parent = track
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local dragging = false
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then dragging = true end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local rel = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        knob.Position = UDim2.new(rel, -7, 0.5, -7)
+        State.FOV = math.floor(rel * 500)
+        lbl.Text = "FOV: " .. State.FOV
+    end)
+end
+
+local ToggleTrigger, TG_Ind,  TG_Lbl,  TG_Badge,  TG_Stroke  = styleButton("ТРИГГЕР",   1)
+local ToggleAim,     AM_Ind,  AM_Lbl,  AM_Badge,  AM_Stroke  = styleButton("АИМ ВРАГИ", 2)
+local ToggleAssist,  AS_Ind,  AS_Lbl,  AS_Badge,  AS_Stroke  = styleButton("АИМ ВСЕХ",  3)
+local ToggleHitbox,  HB_Ind,  HB_Lbl,  HB_Badge,  HB_Stroke  = styleButton("ХИТБОКС",   4)
+local ToggleESP,     ESP_Ind, ESP_Lbl, ESP_Badge, ESP_Stroke = styleButton("ESP",       5)
+local ToggleInfJump, IJ_Ind,  IJ_Lbl,  IJ_Badge,  IJ_Stroke  = styleButton("БЕСК.ПРЫЖ",6)
+local ToggleWall,    WL_Ind,  WL_Lbl,  WL_Badge,  WL_Stroke  = styleButton("СТЕНЫ",     7)
+
+buildFOVSlider()
+
+--// TELEPORT
+local TPContainer = Instance.new("Frame")
+TPContainer.BackgroundColor3 = Theme.BgAlt; TPContainer.BorderSizePixel = 0
+TPContainer.Position = UDim2.new(0, 6, 0, 166)
+TPContainer.Size = UDim2.new(1, -12, 0, 88)
+TPContainer.Parent = MainFrame
+Instance.new("UICorner", TPContainer).CornerRadius = UDim.new(0, 8)
+local TPSt = Instance.new("UIStroke", TPContainer)
+TPSt.Color = Theme.Stroke; TPSt.Thickness = 1
+
+local TPTitle = Instance.new("TextLabel")
+TPTitle.BackgroundTransparency = 1
+TPTitle.Position = UDim2.new(0, 10, 0, 4)
+TPTitle.Size = UDim2.new(1, -20, 0, 14)
+TPTitle.Font = Enum.Font.GothamBold
+TPTitle.Text = "🌸 ТЕЛЕПОРТ"; TPTitle.TextColor3 = Theme.Text
+TPTitle.TextSize = 11; TPTitle.TextXAlignment = Enum.TextXAlignment.Left
+TPTitle.Parent = TPContainer
+
+local TPInput = Instance.new("TextBox")
+TPInput.BackgroundColor3 = Color3.fromRGB(55, 30, 55); TPInput.BorderSizePixel = 0
+TPInput.Position = UDim2.new(0, 10, 0, 22)
+TPInput.Size = UDim2.new(0.6, -14, 0, 26)
+TPInput.Font = Enum.Font.Gotham
+TPInput.PlaceholderText = "Введи ник..."
+TPInput.PlaceholderColor3 = Theme.TextDim
+TPInput.Text = ""; TPInput.TextColor3 = Theme.Text; TPInput.TextSize = 12
+TPInput.TextXAlignment = Enum.TextXAlignment.Left
+TPInput.ClearTextOnFocus = false
+TPInput.Parent = TPContainer
+Instance.new("UICorner", TPInput).CornerRadius = UDim.new(0, 6)
+local TPIP = Instance.new("UIPadding", TPInput); TPIP.PaddingLeft = UDim.new(0, 8)
+
+local TPButton = Instance.new("TextButton")
+TPButton.BackgroundColor3 = Theme.Accent; TPButton.BorderSizePixel = 0
+TPButton.Position = UDim2.new(0.6, -10, 0, 22)
+TPButton.Size = UDim2.new(0.4, -4, 0, 26)
+TPButton.Font = Enum.Font.GothamBold
+TPButton.Text = "ТП"; TPButton.TextColor3 = Theme.Bg; TPButton.TextSize = 12
+TPButton.AutoButtonColor = false; TPButton.Parent = TPContainer
+Instance.new("UICorner", TPButton).CornerRadius = UDim.new(0, 6)
+
+local TPQuickEnemy = Instance.new("TextButton")
+TPQuickEnemy.BackgroundColor3 = Color3.fromRGB(55, 30, 55); TPQuickEnemy.BorderSizePixel = 0
+TPQuickEnemy.Position = UDim2.new(0, 10, 0, 54)
+TPQuickEnemy.Size = UDim2.new(0.48, -14, 0, 24)
+TPQuickEnemy.Font = Enum.Font.GothamMedium
+TPQuickEnemy.Text = "→ ВРАГ"; TPQuickEnemy.TextColor3 = Theme.Text; TPQuickEnemy.TextSize = 10
+TPQuickEnemy.AutoButtonColor = false; TPQuickEnemy.Parent = TPContainer
+Instance.new("UICorner", TPQuickEnemy).CornerRadius = UDim.new(0, 6)
+
+local TPList = Instance.new("TextButton")
+TPList.BackgroundColor3 = Color3.fromRGB(55, 30, 55); TPList.BorderSizePixel = 0
+TPList.Position = UDim2.new(0.52, -4, 0, 54)
+TPList.Size = UDim2.new(0.48, -4, 0, 24)
+TPList.Font = Enum.Font.GothamMedium
+TPList.Text = "→ СЛУЧАЙНЫЙ"; TPList.TextColor3 = Theme.Text; TPList.TextSize = 10
+TPList.AutoButtonColor = false; TPList.Parent = TPContainer
+Instance.new("UICorner", TPList).CornerRadius = UDim.new(0, 6)
+
+local TPHint = Instance.new("TextLabel")
+TPHint.BackgroundTransparency = 1
+TPHint.Position = UDim2.new(0, 10, 0, 80)
+TPHint.Size = UDim2.new(1, -20, 0, 10)
+TPHint.Font = Enum.Font.Gotham
+TPHint.Text = ""; TPHint.TextColor3 = Theme.Green
+TPHint.TextSize = 9; TPHint.TextXAlignment = Enum.TextXAlignment.Left
+TPHint.Parent = TPContainer
+
+local function showHint(text, color)
+    TPHint.Text = text
+    TPHint.TextColor3 = color or Theme.Green
+    task.delay(2, function() if TPHint.Text == text then TPHint.Text = "" end end)
+end
+
+--// ============================================================
+--// 📦 ХОТБАР В ПРАВОМ ВЕРХНЕМ УГЛУ (DRAG + LOCK)
+--// ============================================================
+
+pcall(function()
+    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end)
+
+local MyHotbar = Instance.new("ScreenGui")
+MyHotbar.Name = "PL_MyHotbar"
+MyHotbar.ResetOnSpawn = false
+MyHotbar.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+MyHotbar.IgnoreGuiInset = true
+MyHotbar.DisplayOrder = 999
+MyHotbar.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+--// ГЛАВНЫЙ КОНТЕЙНЕР (перетаскиваемый)
+local HotbarRoot = Instance.new("Frame")
+HotbarRoot.Name = "HotbarRoot"
+HotbarRoot.BackgroundTransparency = 1
+HotbarRoot.AnchorPoint = Vector2.new(1, 0)
+HotbarRoot.Position = UDim2.new(1, -10, 0, 55)
+HotbarRoot.Size = UDim2.new(0, 64, 0, 60)
+HotbarRoot.Parent = MyHotbar
+
+--// ФИКСАЦИЯ и ПОЗИЦИЯ (сохраняются между респавнами)
+_G.PL_HotbarLocked = _G.PL_HotbarLocked or false
+_G.PL_HotbarPos    = _G.PL_HotbarPos    or UDim2.new(1, -10, 0, 55)
+HotbarRoot.Position = _G.PL_HotbarPos
+
+--// ВЕРХНЯЯ ПАНЕЛЬ: 🎒 и 📌
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.BackgroundTransparency = 1
+TopBar.Size = UDim2.new(1, 0, 0, 48)
+TopBar.Position = UDim2.new(0, 0, 0, 0)
+TopBar.Parent = HotbarRoot
+
+local TopList = Instance.new("UIListLayout")
+TopList.FillDirection = Enum.FillDirection.Horizontal
+TopList.Padding = UDim.new(0, 4)
+TopList.SortOrder = Enum.SortOrder.LayoutOrder
+TopList.VerticalAlignment = Enum.VerticalAlignment.Center
+TopList.HorizontalAlignment = Enum.HorizontalAlignment.Right
+TopList.Parent = TopBar
+
+--// 🎒 КНОПКА СВОРАЧИВАНИЯ
+local ToggleHotbarBtn = Instance.new("TextButton")
+ToggleHotbarBtn.Name = "ToggleHotbar"
+ToggleHotbarBtn.Size = UDim2.new(0, 30, 0, 30)
+ToggleHotbarBtn.BackgroundColor3 = Color3.fromRGB(38, 18, 38)
+ToggleHotbarBtn.BackgroundTransparency = 0.15
+ToggleHotbarBtn.Text = "🎒"
+ToggleHotbarBtn.TextSize = 16
+ToggleHotbarBtn.Font = Enum.Font.GothamBold
+ToggleHotbarBtn.TextColor3 = Color3.fromRGB(255, 240, 248)
+ToggleHotbarBtn.AutoButtonColor = false
+ToggleHotbarBtn.LayoutOrder = 1
+ToggleHotbarBtn.Parent = TopBar
+Instance.new("UICorner", ToggleHotbarBtn).CornerRadius = UDim.new(1, 0)
+local THBStroke = Instance.new("UIStroke", ToggleHotbarBtn)
+THBStroke.Thickness = 2
+THBStroke.Color = Color3.fromRGB(255, 130, 180)
+
+--// 📌 КНОПКА ФИКСАЦИИ
+local LockHotbarBtn = Instance.new("TextButton")
+LockHotbarBtn.Name = "LockHotbar"
+LockHotbarBtn.Size = UDim2.new(0, 30, 0, 30)
+LockHotbarBtn.BackgroundColor3 = Color3.fromRGB(38, 18, 38)
+LockHotbarBtn.BackgroundTransparency = 0.15
+LockHotbarBtn.Text = _G.PL_HotbarLocked and "🔒" or "🔓"
+LockHotbarBtn.TextSize = 15
+LockHotbarBtn.Font = Enum.Font.GothamBold
+LockHotbarBtn.TextColor3 = Color3.fromRGB(255, 240, 248)
+LockHotbarBtn.AutoButtonColor = false
+LockHotbarBtn.LayoutOrder = 2
+LockHotbarBtn.Parent = TopBar
+Instance.new("UICorner", LockHotbarBtn).CornerRadius = UDim.new(1, 0)
+local LHBStroke = Instance.new("UIStroke", LockHotbarBtn)
+LHBStroke.Thickness = 2
+LHBStroke.Color = _G.PL_HotbarLocked and Color3.fromRGB(255, 90, 110) or Color3.fromRGB(255, 130, 180)
+
+local function updateLockVisual()
+    if _G.PL_HotbarLocked then
+        LockHotbarBtn.Text = "🔒"
+        LHBStroke.Color = Color3.fromRGB(255, 90, 110)
+        LockHotbarBtn.BackgroundColor3 = Color3.fromRGB(60, 25, 30)
+    else
+        LockHotbarBtn.Text = "🔓"
+        LHBStroke.Color = Color3.fromRGB(255, 130, 180)
+        LockHotbarBtn.BackgroundColor3 = Color3.fromRGB(38, 18, 38)
+    end
+end
+updateLockVisual()
+
+--// КОНТЕЙНЕР ДЛЯ СЛОТОВ
+local ToolContainer = Instance.new("Frame")
+ToolContainer.Name = "ToolContainer"
+ToolContainer.BackgroundTransparency = 1
+ToolContainer.Position = UDim2.new(0, 0, 0, 52)
+ToolContainer.Size = UDim2.new(1, 0, 0, 500)
+ToolContainer.Parent = HotbarRoot
+
+local TBList = Instance.new("UIListLayout")
+TBList.FillDirection = Enum.FillDirection.Vertical
+TBList.Padding = UDim.new(0, 6)
+TBList.SortOrder = Enum.SortOrder.LayoutOrder
+TBList.VerticalAlignment = Enum.VerticalAlignment.Top
+TBList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+TBList.Parent = ToolContainer
+
+--// ПОДГОНЯЕМ РАЗМЕР ROOT ПОД КОНТЕНТ
+local function updateHotbarSize()
+    local count = 0
+    for _, c in ipairs(ToolContainer:GetChildren()) do
+        if c:IsA("TextButton") then count += 1 end
+    end
+    local h = 60 + count * 54
+    HotbarRoot.Size = UDim2.new(0, 64, 0, math.max(60, h))
+end
+
+ToggleHotbarBtn.MouseButton1Click:Connect(function()
+    ToolContainer.Visible = not ToolContainer.Visible
+    ToggleHotbarBtn.Text = ToolContainer.Visible and "🎒" or "📂"
+    task.wait()
+    updateHotbarSize()
+end)
+
+--// DRAG ВСЕЙ ПАНЕЛИ
+do
+    local dragging, dragStart, startPos = false, nil, nil
+
+    local function beginDrag(input)
+        if _G.PL_HotbarLocked then
+            showHint("🔒 Хотбар зафиксирован — снимите замок", Theme.Red)
+            return
+        end
+        dragging = true
+        dragStart = input.Position
+        startPos  = HotbarRoot.Position
+        showHint("🖐️ Двигай хотбар...", Theme.Accent)
+    end
+
+    local function processDrag(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local d = input.Position - dragStart
+        HotbarRoot.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
+    end
+
+    local function endDrag()
+        if dragging then
+            dragging = false
+            _G.PL_HotbarPos = HotbarRoot.Position
+        end
+    end
+
+    TopBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            beginDrag(input)
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then endDrag() end
+            end)
+        end
+    end)
+    TopBar.InputChanged:Connect(processDrag)
+
+    ToolContainer.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            beginDrag(input)
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then endDrag() end
+            end)
+        end
+    end)
+    ToolContainer.InputChanged:Connect(processDrag)
+end
+
+--// ФУНКЦИЯ СОЗДАНИЯ КРУГЛОГО СЛОТА
+local SlotCache = {}
+local SlotOrderCounter = 0
+
+local function updateSlotVisual(btn, tool)
+    local char = LocalPlayer.Character
+    local equipped = char and char:FindFirstChildOfClass("Tool")
+    local stroke = btn:FindFirstChildOfClass("UIStroke")
+    if not stroke then return end
+    if equipped == tool then
+        stroke.Color = Color3.fromRGB(180, 240, 190)
+        stroke.Transparency = 0
+        btn.BackgroundColor3 = Color3.fromRGB(60, 30, 60)
+    else
+        stroke.Color = Color3.fromRGB(120, 70, 110)
+        stroke.Transparency = 0.3
+        btn.BackgroundColor3 = Color3.fromRGB(38, 18, 38)
+    end
+end
+
+local function refreshAllSlots()
+    for t, data in pairs(SlotCache) do
+        if data.button and data.button.Parent then
+            updateSlotVisual(data.button, t)
+        end
+    end
+end
+
+local function createSlot(tool)
+    if not tool or not tool.Parent then return end
+    if SlotCache[tool] then return end
+
+    SlotOrderCounter += 1
+
+    local btn = Instance.new("TextButton")
+    btn.Name = "Slot_" .. tool.Name
+    btn.Size = UDim2.new(0, 48, 0, 48)
+    btn.BackgroundColor3 = Color3.fromRGB(38, 18, 38)
+    btn.BackgroundTransparency = 0.15
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.LayoutOrder = SlotOrderCounter
+    btn.Parent = ToolContainer
+
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Thickness = 2
+    stroke.Color = Color3.fromRGB(120, 70, 110)
+    stroke.Transparency = 0.3
+
+    local icon = Instance.new("ImageLabel")
+    icon.Name = "Icon"
+    icon.BackgroundTransparency = 1
+    icon.Size = UDim2.new(0, 34, 0, 34)
+    icon.Position = UDim2.new(0.5, -17, 0.5, -17)
+    icon.Image = tool.TextureId ~= "" and tool.TextureId or ""
+    icon.Visible = tool.TextureId ~= ""
+    icon.Parent = btn
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, -4, 1, -4)
+    label.Position = UDim2.new(0, 2, 0, 2)
+    label.Font = Enum.Font.GothamBold
+    label.Text = tool.Name:sub(1, 2):upper()
+    label.TextColor3 = Color3.fromRGB(255, 220, 240)
+    label.TextStrokeTransparency = 0
+    label.TextStrokeColor3 = Color3.fromRGB(30, 10, 30)
+    label.TextSize = 14
+    label.Visible = true
+    label.Parent = btn
+
+    --// Клик — экипировать / снять
+    btn.MouseButton1Click:Connect(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local current = char:FindFirstChildOfClass("Tool")
+        if current == tool then
+            hum:UnequipTools()
+        else
+            if tool.Parent and tool.Parent:IsA("Backpack") then
+                tool.Parent = char
+            end
+            hum:EquipTool(tool)
+        end
+        task.wait()
+        refreshAllSlots()
+    end)
+
+    SlotCache[tool] = { button = btn }
+    task.wait()
+    updateHotbarSize()
+    updateSlotVisual(btn, tool)
+end
+
+local function removeSlot(tool)
+    if SlotCache[tool] then
+        SlotCache[tool].button:Destroy()
+        SlotCache[tool] = nil
+        task.wait()
+        updateHotbarSize()
+    end
+end
+
+--// ХУКИ НА ПЕРСОНАЖА (Backpack + Character)
+local hookedChars = setmetatable({}, { __mode = "k" })
+
+local function hookCharForTools(char)
+    if not char or hookedChars[char] then return end
+    hookedChars[char] = true
+
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") then createSlot(tool) end
+    end
+
+    char.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            task.wait(0.1)
+            createSlot(child)
+        end
+    end)
+    char.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then
+            task.wait(0.1)
+            if child.Parent and child.Parent:IsA("Backpack") then
+                refreshAllSlots()
+            else
+                removeSlot(child)
+            end
+        end
+    end)
+end
+
+task.spawn(function()
+    local backpack = LocalPlayer:WaitForChild("Backpack", 10)
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then createSlot(tool) end
+        end
+        backpack.ChildAdded:Connect(function(child)
+            if child:IsA("Tool") then
+                task.wait(0.1)
+                createSlot(child)
+            end
+        end)
+        backpack.ChildRemoved:Connect(function(child)
+            if child:IsA("Tool") then
+                task.wait(0.1)
+                if child.Parent and child.Parent:IsA("Model") then
+                    refreshAllSlots()
+                else
+                    removeSlot(child)
+                end
+            end
+        end)
+    end
+end)
+
+hookCharForTools(LocalPlayer.Character)
+LocalPlayer.CharacterAdded:Connect(function(c)
+    task.wait(0.5)
+    for t, data in pairs(SlotCache) do
+        if data.button and data.button.Parent then
+            data.button:Destroy()
+        end
+    end
+    SlotCache = {}
+    SlotOrderCounter = 0
+    task.wait()
+    updateHotbarSize()
+
+    hookCharForTools(c)
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, tool in ipairs(bp:GetChildren()) do
+            if tool:IsA("Tool") then createSlot(tool) end
+        end
+    end
+end)
+
+--// ВОССТАНОВЛЕНИЕ ПОЗИЦИИ ПОСЛЕ РЕСПАВНА
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    HotbarRoot.Position = _G.PL_HotbarPos
+end)
+
+--// КНОПКИ В ГЛАВНОМ ОКНЕ
+local MoveInvBtn = Instance.new("TextButton")
+MoveInvBtn.BackgroundColor3 = Color3.fromRGB(55, 30, 55)
+MoveInvBtn.BorderSizePixel = 0
+MoveInvBtn.Position = UDim2.new(0, 6, 0, 226)
+MoveInvBtn.Size = UDim2.new(0.5, -9, 0, 26)
+MoveInvBtn.Font = Enum.Font.GothamBold
+MoveInvBtn.Text = "📦 ХОТБАР: ВКЛ"
+MoveInvBtn.TextColor3 = Theme.Text
+MoveInvBtn.TextSize = 11
+MoveInvBtn.AutoButtonColor = false
+MoveInvBtn.Parent = MainFrame
+Instance.new("UICorner", MoveInvBtn).CornerRadius = UDim.new(0, 6)
+local MIB_Stroke = Instance.new("UIStroke", MoveInvBtn)
+MIB_Stroke.Color = Theme.Stroke; MIB_Stroke.Thickness = 1
+
+local ResetInvBtn = Instance.new("TextButton")
+ResetInvBtn.BackgroundColor3 = Color3.fromRGB(55, 30, 55)
+ResetInvBtn.BorderSizePixel = 0
+ResetInvBtn.Position = UDim2.new(0.5, 3, 0, 226)
+ResetInvBtn.Size = UDim2.new(0.5, -9, 0, 26)
+ResetInvBtn.Font = Enum.Font.GothamBold
+ResetInvBtn.Text = "🔄 ХОТБАР: СБРОС"
+ResetInvBtn.TextColor3 = Theme.Text
+ResetInvBtn.TextSize = 11
+ResetInvBtn.AutoButtonColor = false
+ResetInvBtn.Parent = MainFrame
+Instance.new("UICorner", ResetInvBtn).CornerRadius = UDim.new(0, 6)
+local RIB_Stroke = Instance.new("UIStroke", ResetInvBtn)
+RIB_Stroke.Color = Theme.Stroke; RIB_Stroke.Thickness = 1
+
+--// 📌 НОВАЯ КНОПКА: ЗАКРЕПИТЬ ХОТБАР (в главном меню)
+local LockInvBtn = Instance.new("TextButton")
+LockInvBtn.BackgroundColor3 = Color3.fromRGB(55, 30, 55)
+LockInvBtn.BorderSizePixel = 0
+LockInvBtn.Position = UDim2.new(0, 6, 0, 256)
+LockInvBtn.Size = UDim2.new(1, -12, 0, 26)
+LockInvBtn.Font = Enum.Font.GothamBold
+LockInvBtn.Text = _G.PL_HotbarLocked and "🔒 ХОТБАР: ЗАКРЕПЛЁН" or "🔓 ХОТБАР: ЗАКРЕПИТЬ"
+LockInvBtn.TextColor3 = _G.PL_HotbarLocked and Theme.Red or Theme.Text
+LockInvBtn.TextSize = 11
+LockInvBtn.AutoButtonColor = false
+LockInvBtn.Parent = MainFrame
+Instance.new("UICorner", LockInvBtn).CornerRadius = UDim.new(0, 6)
+local LIB_Stroke = Instance.new("UIStroke", LockInvBtn)
+LIB_Stroke.Color = _G.PL_HotbarLocked and Theme.Red or Theme.Stroke
+LIB_Stroke.Thickness = 1
+
+--// Функция обновления кнопки фиксации в меню
+local function updateMenuLockBtn()
+    if _G.PL_HotbarLocked then
+        LockInvBtn.Text = "🔒 ХОТБАР: ЗАКРЕПЛЁН"
+        LockInvBtn.TextColor3 = Theme.Red
+        LIB_Stroke.Color = Theme.Red
+        LockInvBtn.BackgroundColor3 = Color3.fromRGB(60, 25, 30)
+    else
+        LockInvBtn.Text = "🔓 ХОТБАР: ЗАКРЕПИТЬ"
+        LockInvBtn.TextColor3 = Theme.Text
+        LIB_Stroke.Color = Theme.Stroke
+        LockInvBtn.BackgroundColor3 = Color3.fromRGB(55, 30, 55)
+    end
+end
+
+--// Клик по кнопке фиксации в меню
+LockInvBtn.MouseButton1Click:Connect(function()
+    _G.PL_HotbarLocked = not _G.PL_HotbarLocked
+    updateLockVisual()      -- обновляет иконку 📌 на самом хотбаре
+    updateMenuLockBtn()     -- обновляет кнопку в меню
+    if _G.PL_HotbarLocked then
+        showHint("🔒 Хотбар зафиксирован (нельзя двигать)", Theme.Red)
+    else
+        showHint("🔓 Хотбар разблокирован — можно двигать", Theme.Green)
+    end
+end)
+
+--// Клик по иконке 📌 на самом хотбаре — тоже переключает и обновляет меню
+LockHotbarBtn.MouseButton1Click:Connect(function()
+    _G.PL_HotbarLocked = not _G.PL_HotbarLocked
+    updateLockVisual()
+    updateMenuLockBtn()
+    showHint(_G.PL_HotbarLocked and "🔒 Хотбар зафиксирован" or "🔓 Хотбар свободен",
+             _G.PL_HotbarLocked and Theme.Green or Theme.Accent)
+end)
+
+--// Первичная установка визуала
+updateMenuLockBtn()
+
+MoveInvBtn.MouseButton1Click:Connect(function()
+    MyHotbar.Enabled = true
+    ToolContainer.Visible = true
+    ToggleHotbarBtn.Text = "🎒"
+    task.wait()
+    updateHotbarSize()
+    showHint("📦 Хотбар включён", Theme.Green)
+end)
+
+ResetInvBtn.MouseButton1Click:Connect(function()
+    _G.PL_HotbarPos = UDim2.new(1, -10, 0, 55)
+    HotbarRoot.Position = _G.PL_HotbarPos
+    _G.PL_HotbarLocked = false
+    updateLockVisual()
+    updateMenuLockBtn()
+    showHint("🔄 Позиция сброшена", Theme.Accent)
+end)
+
+-- Collapse
+local isCollapsed, savedPosition = false, nil
+local COMPACT_SIZE  = UDim2.new(0, 66, 0, 32)
+local EXPANDED_SIZE = UDim2.new(0, 685, 0, 328)
+
+CollapseButton.MouseButton1Click:Connect(function()
+    isCollapsed = not isCollapsed
+    if isCollapsed then
+        savedPosition = MainFrame.Position
+        MainFrame.Size = COMPACT_SIZE
+        CollapseButton.Text = "+"
+        ButtonsScroll.Visible=false; FOVContainer.Visible=false; TPContainer.Visible=false
+        TeamBadge.Visible=false; Title.Visible=false; StatusLabel.Visible=false
+        MoveInvBtn.Visible=false; ResetInvBtn.Visible=false
+        LockInvBtn.Visible=false
+    else
+        MainFrame.Size = EXPANDED_SIZE
+        CollapseButton.Text = "−"
+        if savedPosition then MainFrame.Position = savedPosition end
+        ButtonsScroll.Visible=true; FOVContainer.Visible=true; TPContainer.Visible=true
+        TeamBadge.Visible=true; Title.Visible=true; StatusLabel.Visible=true
+        MoveInvBtn.Visible=true; ResetInvBtn.Visible=true
+        LockInvBtn.Visible=true
+    end
+end)
+
+-- FOV circle
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness=2; FOVCircle.Color=Color3.fromRGB(255,130,180)
+FOVCircle.Filled=false; FOVCircle.Transparency=1
+FOVCircle.NumSides=72; FOVCircle.Radius=State.FOV; FOVCircle.Visible=false
+
+--// FACTION
+local function getTeamKind(player)
+    local t = player.Team
+    if not t then return "Neutral" end
+    local n = string.lower(t.Name)
+    if n:find("guard") or n:find("police") or n:find("warden")
+    or n:find("cop") or n:find("officer") or n:find("sheriff") then return "Guard" end
+    if n:find("crim") or n:find("escape") or n:find("fugitive") then return "Criminal" end
+    if n:find("inmate") or n:find("prisoner") or n:find("convict") then return "Inmate" end
+    return "Neutral"
+end
+
+local function isAimTarget(player)
+    if player == LocalPlayer then return false end
+    if not player.Character then return false end
+    local hum = player.Character:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    local my, his = getTeamKind(LocalPlayer), getTeamKind(player)
+    if my == "Neutral" then return his ~= "Neutral" or player.Team ~= LocalPlayer.Team end
+    if my == "Guard" then return his == "Criminal" end
+    if my == "Criminal" then return his == "Guard" end
+    if my == "Inmate" then return his == "Guard" or his == "Criminal" end
+    return player.Team ~= LocalPlayer.Team
+end
+
+local function isFactionEnemy(p) return isAimTarget(p) end
+
+--// RAYCAST
+local RayParams = RaycastParams.new()
+RayParams.FilterType = Enum.RaycastFilterType.Exclude
+RayParams.IgnoreWater = true
+
+local function buildIgnoreList(targetPart)
+    local list = { LocalPlayer.Character }
+    local tChar = targetPart and targetPart:FindFirstAncestorOfClass("Model")
+    if tChar then table.insert(list, tChar) end
+    for part in pairs(ActiveHitboxes) do
+        if part.Parent then table.insert(list, part) end
+    end
+    return list
+end
+
+local function isVisible(targetPart)
+    if not targetPart or not LocalPlayer.Character then return false end
+    RayParams.FilterDescendantsInstances = buildIgnoreList(targetPart)
+    local origin = Camera.CFrame.Position
+    local dir    = targetPart.Position - origin
+    return workspace:Raycast(origin, dir, RayParams) == nil
+end
+
+--// TRACKING
+local function trackCharacter(player)
+    CharacterCache[player] = nil
+    player.CharacterAdded:Connect(function(char)
+        local hrp = char:WaitForChild("HumanoidRootPart", 10)
+        if hrp then CharacterCache[player] = hrp end
+    end)
+    if player.Character then
+        CharacterCache[player] = player.Character:FindFirstChild("HumanoidRootPart")
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do trackCharacter(p) end
+Players.PlayerAdded:Connect(trackCharacter)
+Players.PlayerRemoving:Connect(function(p)
+    CharacterCache[p] = nil
+    if ESPCache[p] then ESPCache[p]:Destroy(); ESPCache[p] = nil end
+end)
+
+local LastTeamName = nil
+local function updateTeamBadge()
+    local t = LocalPlayer.Team
+    if t then
+        TeamBadge.Text = "TEAM: " .. string.upper(t.Name)
+        TeamBadge.TextColor3 = t.TeamColor.Color
+    else
+        TeamBadge.Text = "TEAM: NONE"; TeamBadge.TextColor3 = Theme.TextDim
+    end
+end
+LocalPlayer:GetPropertyChangedSignal("Team"):Connect(updateTeamBadge)
+updateTeamBadge()
+
+--// TELEPORT
+local function findPlayer(name)
+    if name == "" then return nil end
+    local lower = string.lower(name)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and string.find(string.lower(p.Name), lower, 1, true) then
+            return p
+        end
+    end
+    return nil
+end
+
+local function doTeleport(tp)
+    if not tp then return false, "Игрок не найден" end
+    if not tp.Character then return false, "Не загружен" end
+    local th = tp.Character:FindFirstChild("HumanoidRootPart")
+    if not th then return false, "Нет HRP" end
+    local mh = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not mh then return false, "Нет персонажа" end
+    mh.CFrame = CFrame.new(th.Position + Vector3.new(0, 0, -3))
+    return true, "ТП к " .. tp.Name
+end
+
+TPButton.MouseButton1Click:Connect(function()
+    local t = findPlayer(TPInput.Text)
+    if not t then showHint("Не найден", Theme.Red); return end
+    local ok, msg = doTeleport(t)
+    showHint(msg, ok and Theme.Green or Theme.Red)
+end)
+
+TPQuickEnemy.MouseButton1Click:Connect(function()
+    local best, bd = nil, math.huge
+    local mp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not mp then showHint("Нет персонажа", Theme.Red); return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isFactionEnemy(p) then
+            local hrp = CharacterCache[p]
+            if hrp then
+                local d = (hrp.Position - mp.Position).Magnitude
+                if d < bd then best, bd = p, d end
+            end
+        end
+    end
+    if not best then showHint("Врагов нет", Theme.Red); return end
+    local ok, msg = doTeleport(best)
+    showHint(msg, ok and Theme.Green or Theme.Red)
+end)
+
+TPList.MouseButton1Click:Connect(function()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            table.insert(list, p)
+        end
+    end
+    if #list == 0 then showHint("Нет игроков", Theme.Red); return end
+    local t = list[math.random(1, #list)]
+    local ok, msg = doTeleport(t)
+    showHint(msg, ok and Theme.Green or Theme.Red)
+end)
+
+--// ДИСТАНЦИЯ ДО ЦЕЛИ
+local function getMyHrp()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function isWithinAimRange(part)
+    if not part then return false end
+    local myHrp = getMyHrp()
+    if not myHrp then return false end
+    return (part.Position - myHrp.Position).Magnitude <= MAX_AIM_DISTANCE
+end
+
+--// TARGET FINDERS
+function findClosestEnemy()
+    if not (State.Aim or State.Trigger) then return nil, nil end
+    local myHrp = getMyHrp()
+    if not myHrp then return nil, nil end
+
+    local sc = Camera.ViewportSize * 0.5
+    local cl, cd, cp = nil, State.FOV, nil
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isAimTarget(p) then
+            local char = p.Character; local hrp = CharacterCache[p]
+            if char and hrp then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local dist = (hrp.Position - myHrp.Position).Magnitude
+                    if dist <= MAX_AIM_DISTANCE then
+                        local aimPart = char:FindFirstChild("Head") or hrp
+                        local sp, on = Camera:WorldToViewportPoint(aimPart.Position)
+                        if on then
+                            local d = (Vector2.new(sp.X, sp.Y) - sc).Magnitude
+                            if d < cd then cl, cd, cp = p, d, aimPart end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if cp and not isVisible(cp) then return nil, nil end
+    return cl, cp
+end
+
+function findClosestAll()
+    if not State.AimAssist then return nil, nil end
+    local myHrp = getMyHrp()
+    if not myHrp then return nil, nil end
+
+    local sc = Camera.ViewportSize * 0.5
+    local cl, cd, cp = nil, State.FOV, nil
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            local char = p.Character; local hrp = CharacterCache[p]
+            if char and hrp then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local dist = (hrp.Position - myHrp.Position).Magnitude
+                    if dist <= MAX_AIM_DISTANCE then
+                        local aimPart = char:FindFirstChild("Head") or hrp
+                        local sp, on = Camera:WorldToViewportPoint(aimPart.Position)
+                        if on then
+                            local d = (Vector2.new(sp.X, sp.Y) - sc).Magnitude
+                            if d < cd then cl, cd, cp = p, d, aimPart end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if cp and not isVisible(cp) then return nil, nil end
+    return cl, cp
+end
+
+--// ESP
+local function createESP(player)
+    if ESPCache[player] then return ESPCache[player] end
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "PL_ESP"; bb.AlwaysOnTop = true
+    bb.Size = UDim2.new(0, 150, 0, 40)
+    bb.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+    bb.Enabled = false; bb.MaxDistance = 500
+    local lbl = Instance.new("TextLabel")
+    lbl.Name = "Label"; lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 14
+    lbl.TextStrokeTransparency = 0; lbl.Text = player.Name
+    lbl.TextColor3 = (player.TeamColor and player.TeamColor.Color) or Color3.new(1,1,1)
+    lbl.Parent = bb
+    ESPCache[player] = bb
+    return bb
+end
+
+local function refreshESP(player)
+    local bb = createESP(player)
+    local char = player.Character
+    if not char then bb.Enabled = false; return end
+    local head = char:FindFirstChild("Head")
+    if not head then
+        task.spawn(function()
+            local h = char:WaitForChild("Head", 5)
+            if h and bb.Parent ~= h then bb.Parent = h end
+            bb.Enabled = State.ESP
+        end)
+        return
+    end
+    if bb.Parent ~= head then bb.Parent = head end
+    bb.Enabled = State.ESP
+    local lbl = bb:FindFirstChild("Label")
+    if lbl then
+        lbl.Text = player.Name
+        lbl.TextColor3 = (player.TeamColor and player.TeamColor.Color) or Color3.new(1,1,1)
+    end
+end
+
+local function setupESPPlayer(player)
+    if player == LocalPlayer then return end
+    createESP(player); refreshESP(player)
+    player.CharacterAdded:Connect(function() task.wait(0.5); refreshESP(player) end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do setupESPPlayer(p) end
+Players.PlayerAdded:Connect(setupESPPlayer)
+
+--// HITBOX
+local function resetHitboxOnCharacter(char)
+    if not char then return end
+    local list = HitboxCache[char]
+    if list then
+        for _, e in ipairs(list) do
+            if e.conn then e.conn:Disconnect() end
+            if e.hb then
+                unregisterHitbox(e.hb)
+                if e.hb.Parent then e.hb:Destroy() end
+            end
+        end
+        HitboxCache[char] = nil
+    end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part.Name == "PL_Hitbox" then
+            unregisterHitbox(part); part:Destroy()
+        end
+    end
+end
+
+local function applyHitboxToCharacter(char)
+    if not char or HitboxCache[char] then return end
+    local list = {}
+    for partName in pairs(HitboxParts) do
+        local part = char:FindFirstChild(partName)
+        if part and part:IsA("BasePart") and not part:FindFirstChild("PL_Hitbox") then
+            local hb = Instance.new("Part")
+            hb.Name = "PL_Hitbox"; hb.Size = part.Size * HITBOX_SCALE
+            hb.Transparency = 0.75; hb.Color = Color3.fromRGB(255, 130, 180)
+            hb.Material = Enum.Material.Neon
+            hb.CanCollide = true; hb.CanTouch = true; hb.CanQuery = true
+            hb.Massless = true; hb.Anchored = false; hb.CastShadow = false
+            hb.CFrame = part.CFrame; hb.Parent = char
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = part; weld.Part1 = hb; weld.Parent = hb
+            local conn = part:GetPropertyChangedSignal("Size"):Connect(function()
+                if hb and hb.Parent then hb.Size = part.Size * HITBOX_SCALE end
+            end)
+            registerHitbox(hb)
+            table.insert(list, {hb = hb, conn = conn})
+        end
+    end
+    HitboxCache[char] = list
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.Died:Connect(function() resetHitboxOnCharacter(char) end) end
+end
+
+local function enableHitboxAll()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then applyHitboxToCharacter(p.Character) end
+    end
+end
+
+local function disableHitboxAll()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then resetHitboxOnCharacter(p.Character) end
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then
+        p.CharacterAdded:Connect(function(char)
+            task.wait(0.5)
+            if State.Hitbox then applyHitboxToCharacter(char) end
+        end)
+        p.CharacterRemoving:Connect(function(char) resetHitboxOnCharacter(char) end)
+    end
+end
+Players.PlayerAdded:Connect(function(p)
+    if p ~= LocalPlayer then
+        p.CharacterAdded:Connect(function(char)
+            task.wait(0.5)
+            if State.Hitbox then applyHitboxToCharacter(char) end
+        end)
+        p.CharacterRemoving:Connect(function(char) resetHitboxOnCharacter(char) end)
+    end
+end)
+
+--// INFINITE JUMP
+UserInputService.JumpRequest:Connect(function()
+    if not State.InfJump then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+end)
+
+--// MAIN LOOP
+RunService.RenderStepped:Connect(function()
+    local now = os.clock()
+
+    local showFOV = State.Aim or State.Trigger or State.AimAssist
+    if FOVCircle.Visible ~= showFOV then FOVCircle.Visible = showFOV end
+    if showFOV then
+        FOVCircle.Position = Camera.ViewportSize * 0.5
+        FOVCircle.Radius   = State.FOV
+    end
+
+    if State.Hitbox and now - lastHitboxScan > HITBOX_SCAN_INTERVAL then
+        lastHitboxScan = now
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local char = p.Character
+                if char and not HitboxCache[char] then
+                    applyHitboxToCharacter(char)
+                end
+            end
+        end
+    end
+
+    local aimed, target, part = false, nil, nil
+
+    if State.AimAssist then
+        if now - lastAimUpdate > AIM_UPDATE_INTERVAL then
+            TargetCache.player, TargetCache.part = findClosestAll()
+            lastAimUpdate = now
+        end
+        target, part = TargetCache.player, TargetCache.part
+        if target and part then
+            aimed = true
+            if Camera.CameraType ~= Enum.CameraType.Custom then
+                Camera.CameraType = Enum.CameraType.Custom
+            end
+            local cp = Camera.CFrame.Position
+            if (cp - part.Position).Magnitude > 0.5 then
+                Camera.CFrame = Camera.CFrame:Lerp(CFrame.lookAt(cp, part.Position), AIM_SPEED)
+            end
+        end
+    end
+
+    if not aimed and (State.Aim or State.Trigger) then
+        if hasToolEquipped() then
+            if now - lastAimUpdate > AIM_UPDATE_INTERVAL then
+                TargetCache.player, TargetCache.part = findClosestEnemy()
+                lastAimUpdate = now
+            end
+            target, part = TargetCache.player, TargetCache.part
+            if target and part then
+                aimed = true
+                if State.Aim then
+                    if Camera.CameraType ~= Enum.CameraType.Custom then
+                        Camera.CameraType = Enum.CameraType.Custom
+                    end
+                    local cp = Camera.CFrame.Position
+                    if (cp - part.Position).Magnitude > 0.5 then
+                        Camera.CFrame = Camera.CFrame:Lerp(CFrame.lookAt(cp, part.Position), AIM_SPEED)
+                    end
+                end
+                if State.Trigger and now - lastTrigger > nextTriggerDelay then
+                    local char = LocalPlayer.Character
+                    local tool = char and char:FindFirstChildOfClass("Tool")
+                    if tool and isVisible(part) and isWithinAimRange(part) then
+                        local camLook = Camera.CFrame.LookVector
+                        local toT = (part.Position - Camera.CFrame.Position).Unit
+                        local ang = math.deg(math.acos(math.clamp(camLook:Dot(toT), -1, 1)))
+                        if ang <= MAX_AIM_ANGLE then
+                            lastTrigger = now
+                            nextTriggerDelay = TriggerCooldownMin + math.random() * (TriggerCooldownMax - TriggerCooldownMin)
+                            local sp, on = Camera:WorldToViewportPoint(part.Position)
+                            if on then
+                                pcall(function()
+                                    VirtualUser:Button1Down(Vector2.new(sp.X, sp.Y))
+                                    task.wait(0.03 + math.random() * 0.04)
+                                    VirtualUser:Button1Up(Vector2.new(sp.X, sp.Y))
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            TargetCache.player, TargetCache.part = nil, nil
+        end
+    end
+
+    if LastTeamName ~= (LocalPlayer.Team and LocalPlayer.Team.Name) then
+        LastTeamName = LocalPlayer.Team and LocalPlayer.Team.Name
+        updateTeamBadge()
+    end
+end)
+
+--// TOGGLE
+local function updateButtonVisual(key, indicator, label, badge, stroke, baseText)
+    local on = State[key]
+    if on then
+        indicator.BackgroundColor3 = Theme.Green
+        badge.BackgroundColor3 = Theme.GreenDark
+        badge.TextColor3 = Theme.Text
+        badge.Text = "ON"; stroke.Color = Theme.Green
+    else
+        indicator.BackgroundColor3 = Theme.Accent
+        badge.BackgroundColor3 = Color3.fromRGB(55, 30, 55)
+        badge.TextColor3 = Theme.TextDim
+        badge.Text = "OFF"; stroke.Color = Theme.Stroke
+    end
+    label.Text = baseText
+end
+
+local function bindToggle(btn, key, text, indicator, label, badge, stroke)
+    btn:SetAttribute("Key", key)
+    btn.MouseButton1Click:Connect(function()
+        State[key] = not State[key]
+        updateButtonVisual(key, indicator, label, badge, stroke, text)
+        if not State[key] then
+            if key == "Hitbox" then disableHitboxAll()
+            elseif key == "ESP" then
+                for _, bb in pairs(ESPCache) do bb.Enabled = false end
+            end
+        elseif key == "Hitbox" then enableHitboxAll()
+        elseif key == "ESP" then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer then refreshESP(p) end
+            end
+        end
+    end)
+end
+
+bindToggle(ToggleTrigger, "Trigger",   "ТРИГГЕР",     TG_Ind,  TG_Lbl,  TG_Badge,  TG_Stroke)
+bindToggle(ToggleAim,     "Aim",       "АИМ ВРАГИ",   AM_Ind,  AM_Lbl,  AM_Badge,  AM_Stroke)
+bindToggle(ToggleAssist,  "AimAssist", "АИМ ВСЕХ",    AS_Ind,  AS_Lbl,  AS_Badge,  AS_Stroke)
+bindToggle(ToggleHitbox,  "Hitbox",    "ХИТБОКС",     HB_Ind,  HB_Lbl,  HB_Badge,  HB_Stroke)
+bindToggle(ToggleESP,     "ESP",       "ESP",         ESP_Ind, ESP_Lbl, ESP_Badge, ESP_Stroke)
+bindToggle(ToggleInfJump, "InfJump",   "БЕСК.ПРЫЖ",   IJ_Ind,  IJ_Lbl,  IJ_Badge,  IJ_Stroke)
+bindToggle(ToggleWall,    "WallCheck", "СТЕНЫ",       WL_Ind,  WL_Lbl,  WL_Badge,  WL_Stroke)
+
+updateButtonVisual("WallCheck", WL_Ind, WL_Lbl, WL_Badge, WL_Stroke, "СТЕНЫ")
+
+--// DIAGNOSTIC
+task.spawn(function()
+    task.wait(2)
+    print("🌸 ====================================")
+    print("🌸 PRISON LIFE HUB v7.7 SAFE MOBILE")
+    print("🌸 ====================================")
+    print("✓ Sprint: родной Prison Life (не ломаем)")
+    print("✓ Silent Aim: УДАЛЁН")
+    print("✓ Лимит аима: 300 метров")
+    print("✓ АИМ ВРАГИ + ТРИГГЕР: только с оружием в руках")
+    print("✓ Анти-кик: рандомные задержки + проверки видимости/угла")
+    print("✓ 📦 Свой хотбар в правом верхнем углу")
+    print("✓ ⭕ Круглые слоты с иконками")
+    print("✓ 🖐️ DRAG всей панели хотбара")
+    print("✓ 📌 LOCK фиксация (кнопка в меню + иконка на хотбаре)")
+    print("✓ 💾 Позиция сохраняется между респавнами")
+    print("✓ 🛠️ Хуки: Backpack + Character + StarterGear")
+    print("ТЫ:", LocalPlayer.Name, "| Kind:", getTeamKind(LocalPlayer))
+    print("🌸 ====================================")
+end)
+
+print("🌸 PRISON LIFE HUB v7.7 SAFE MOBILE загружен")
